@@ -132,3 +132,9 @@ The path `/uuid your seetting` to get the clash config and vless:// link.
     <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=6Kmfi6HP/EDtunnel&type=Date" />
   </picture>
 </a>
+
+
+GitHub地址：
+```js
+https://github.com/6Kmfi6HP/EDtunnel
+```
