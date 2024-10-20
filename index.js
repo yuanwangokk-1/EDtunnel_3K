@@ -5,10 +5,15 @@ import { connect } from 'cloudflare:sockets';
 // [Windows] Press "Win + R", input cmd and run:  Powershell -NoExit -Command "[guid]::NewGuid()"
 let userID = 'd342d11e-d424-4583-b36e-524ab1f0afa4';
 
-const proxyIPs = ['cdn.xn--b6gac.eu.org', 'cdn-all.xn--b6gac.eu.org', 'workers.cloudflare.cyou'];
+const proxyIPs = ['cdn.xn--b6gac.eu.org:443', 'cdn-all.xn--b6gac.eu.org:443'];
 
 // if you want to use ipv6 or single proxyIP, please add comment at this line and remove comment at the next line
 let proxyIP = proxyIPs[Math.floor(Math.random() * proxyIPs.length)];
+// how to make sure the proxyIP with port is valid?
+// go to https://proxyip.edtunnel.best/ , input your proxyIP:proxyPort, and click "Check" button
+// if the port is valid, value "Proxy IP" is true, otherwise false and the value "Origin" must be 443
+let proxyPort = proxyIP.includes(':') ? proxyIP.split(':')[1] : '443';
+
 // use single proxyip instead of random
 // let proxyIP = 'cdn.xn--b6gac.eu.org';
 // ipv6 proxyIP example remove comment to use
@@ -38,13 +43,27 @@ export default {
 		try {
 			const { UUID, PROXYIP, SOCKS5, SOCKS5_RELAY } = env;
 			userID = UUID || userID;
-			proxyIP = PROXYIP || proxyIP;
 			socks5Address = SOCKS5 || socks5Address;
 			socks5Relay = SOCKS5_RELAY || socks5Relay;
-
+			if (PROXYIP) {
+				// Split PROXYIP into an array of proxy addresses
+				const proxyAddresses = PROXYIP.split(',').map(addr => addr.trim());
+				// Randomly select one proxy address
+				const selectedProxy = proxyAddresses[Math.floor(Math.random() * proxyAddresses.length)];
+				[proxyIP, proxyPort = '443'] = selectedProxy.split(':');
+			} else {
+				proxyPort = proxyIP.includes(':') ? proxyIP.split(':')[1] : '443';
+				proxyIP = proxyIP.split(':')[0];
+			}
+			console.log('ProxyIP:', proxyIP);
+			console.log('ProxyPort:', proxyPort);
 			if (socks5Address) {
 				try {
-					parsedSocks5Address = socks5AddressParser(socks5Address);
+					// Split SOCKS5 into an array of addresses
+					const socks5Addresses = socks5Address.split(',').map(addr => addr.trim());
+					// Randomly select one SOCKS5 address
+					const selectedSocks5 = socks5Addresses[Math.floor(Math.random() * socks5Addresses.length)];
+					parsedSocks5Address = socks5AddressParser(selectedSocks5);
 					enableSocks = true;
 				} catch (err) {
 					console.log(err.toString());
@@ -171,18 +190,15 @@ async function ProtocolOverWSHandler(request) {
 			if (hasError) {
 				// controller.error(message);
 				throw new Error(message); // cf seems has bug, controller.error will not end stream
-				// webSocket.close(1000, message);
-				return;
 			}
-			// if UDP but port not DNS port, close it
+			// Handle UDP connections for DNS (port 53) only
 			if (isUDP) {
 				if (portRemote === 53) {
 					isDns = true;
 				} else {
-					// controller.error('UDP proxy only enable for DNS which is port 53');
-					throw new Error('UDP proxy only enable for DNS which is port 53'); // cf seems has bug, controller.error will not end stream
-					return;
+					throw new Error('UDP proxy is only enabled for DNS (port 53)');
 				}
+				return; // Early return after setting isDns or throwing error
 			}
 			// ["version", "附加信息长度 N"]
 			const ProtocolResponseHeader = new Uint8Array([ProtocolVersion[0], 0]);
@@ -248,7 +264,6 @@ async function trojanOverWSHandler(request) {
 			portWithRandomLog = `${portRemote}--${Math.random()} tcp`;
 			if (hasError) {
 				throw new Error(message);
-				return;
 			}
 			handleTCPOutBound(remoteSocketWapper, addressRemote, portRemote, rawClientData, webSocket, log, addressType);
 		},
@@ -306,7 +321,7 @@ async function handleTCPOutBound(remoteSocket, addressType, addressRemote, portR
 		if (enableSocks) {
 			tcpSocket = await connectAndWrite(addressRemote, portRemote, true);
 		} else {
-			tcpSocket = await connectAndWrite(proxyIP || addressRemote, portRemote);
+			tcpSocket = await connectAndWrite(proxyIP || addressRemote, proxyPort || portRemote, false);
 		}
 		// no matter retry success or not, close websocket
 		tcpSocket.closed.catch(error => {
@@ -1129,7 +1144,7 @@ const ed = 'RUR0dW5uZWw=';
  * @returns {string}
  */
 function getConfig(userIDs, hostName) {
-	const commonUrlPart = `:443?encryption=none&security=tls&sni=${hostName}&fp=randomized&type=ws&host=${hostName}&path=%2F%3Fed%3D2048#${hostName}`;
+	const commonUrlPart = `?encryption=none&security=tls&sni=${hostName}&fp=randomized&type=ws&host=${hostName}&path=%2F%3Fed%3D2048#${hostName}`;
 
 	// Split the userIDs into an array
 	const userIDArray = userIDs.split(",");
@@ -1302,8 +1317,8 @@ function getConfig(userIDs, hostName) {
   `;
 
 	const configOutput = userIDArray.map((userID) => {
-		const protocolMain = atob(pt) + '://' + userID + atob(at) + hostName + commonUrlPart;
-		const protocolSec = atob(pt) + '://' + userID + atob(at) + proxyIP + commonUrlPart;
+		const protocolMain = atob(pt) + '://' + userID + atob(at) + hostName + ":443" + commonUrlPart;
+		const protocolSec = atob(pt) + '://' + userID + atob(at) + proxyIP + ":" + proxyPort + commonUrlPart;
 		return `
       <div class="container config-item">
         <h2>UUID: ${userID}</h2>
@@ -1346,38 +1361,38 @@ function getConfig(userIDs, hostName) {
 const HttpPort = new Set([80, 8080, 8880, 2052, 2086, 2095, 2082]);
 const HttpsPort = new Set([443, 8443, 2053, 2096, 2087, 2083]);
 
-function GenSub(ไอดีผู้ใช้_เส้นทาง, ชื่อโฮสต์) {
-	const อาร์เรย์ไอดีผู้ใช้ = ไอดีผู้ใช้_เส้นทาง.includes(',') ? ไอดีผู้ใช้_เส้นทาง.split(',') : [ไอดีผู้ใช้_เส้นทาง];
+function GenSub(userID_path, hostname) {
+	const userIDArray = userID_path.includes(',') ? userID_path.split(',') : [userID_path];
 	const randomPath = () => '/' + Math.random().toString(36).substring(2, 15) + '?ed=2048';
-	const ส่วนUrlทั่วไปHttp = `?encryption=none&security=none&fp=random&type=ws&host=${ชื่อโฮสต์}&path=${encodeURIComponent(randomPath())}#`;
-	const ส่วนUrlทั่วไปHttps = `?encryption=none&security=tls&sni=${ชื่อโฮสต์}&fp=random&type=ws&host=${ชื่อโฮสต์}&path=%2F%3Fed%3D2048#`;
+	const commonUrlPartHttp = `?encryption=none&security=none&fp=random&type=ws&host=${hostname}&path=${encodeURIComponent(randomPath())}#`;
+	const commonUrlPartHttps = `?encryption=none&security=tls&sni=${hostname}&fp=random&type=ws&host=${hostname}&path=%2F%3Fed%3D2048#`;
 
-	const ผลลัพธ์ = อาร์เรย์ไอดีผู้ใช้.flatMap((ไอดีผู้ใช้) => {
-		const PartHttp = Array.from(HttpPort).flatMap((พอร์ต) => {
-			if (!ชื่อโฮสต์.includes('pages.dev')) {
-				const ส่วนUrl = `${ชื่อโฮสต์}-HTTP-${พอร์ต}`;
-				const protocolหลักHttp = atob(pt) + '://' + ไอดีผู้ใช้ + atob(at) + ชื่อโฮสต์ + ':' + พอร์ต + ส่วนUrlทั่วไปHttp + ส่วนUrl;
+	const result = userIDArray.flatMap((userID) => {
+		const PartHttp = Array.from(HttpPort).flatMap((port) => {
+			if (!hostname.includes('pages.dev')) {
+				const urlPart = `${hostname}-HTTP-${port}`;
+				const mainProtocolHttp = atob(pt) + '://' + userID + atob(at) + hostname + ':' + port + commonUrlPartHttp + urlPart;
 				return proxyIPs.flatMap((proxyIP) => {
-					const protocolรองHttp = atob(pt) + '://' + ไอดีผู้ใช้ + atob(at) + proxyIP + ':' + พอร์ต + ส่วนUrlทั่วไปHttp + ส่วนUrl + '-' + proxyIP + '-' + atob(ed);
-					return [protocolหลักHttp, protocolรองHttp];
+					const secondaryProtocolHttp = atob(pt) + '://' + userID + atob(at) + proxyIP.split(':')[0] + ':' + proxyPort + commonUrlPartHttp + urlPart + '-' + proxyIP + '-' + atob(ed);
+					return [mainProtocolHttp, secondaryProtocolHttp];
 				});
 			}
 			return [];
 		});
 
-		const PartHttps = Array.from(HttpsPort).flatMap((พอร์ต) => {
-			const ส่วนUrl = `${ชื่อโฮสต์}-HTTPS-${พอร์ต}`;
-			const protocolหลักHttps = atob(pt) + '://' + ไอดีผู้ใช้ + atob(at) + ชื่อโฮสต์ + ':' + พอร์ต + ส่วนUrlทั่วไปHttps + ส่วนUrl;
+		const PartHttps = Array.from(HttpsPort).flatMap((port) => {
+			const urlPart = `${hostname}-HTTPS-${port}`;
+			const mainProtocolHttps = atob(pt) + '://' + userID + atob(at) + hostname + ':' + port + commonUrlPartHttps + urlPart;
 			return proxyIPs.flatMap((proxyIP) => {
-				const protocolรองHttps = atob(pt) + '://' + ไอดีผู้ใช้ + atob(at) + proxyIP + ':' + พอร์ต + ส่วนUrlทั่วไปHttps + ส่วนUrl + '-' + proxyIP + '-' + atob(ed);
-				return [protocolหลักHttps, protocolรองHttps];
+				const secondaryProtocolHttps = atob(pt) + '://' + userID + atob(at) + proxyIP.split(':')[0] + ':' + proxyPort + commonUrlPartHttps + urlPart + '-' + proxyIP + '-' + atob(ed);
+				return [mainProtocolHttps, secondaryProtocolHttps];
 			});
 		});
 
 		return [...PartHttp, ...PartHttps];
 	});
 
-	return ผลลัพธ์.join('\n');
+	return result.join('\n');
 }
 
 const hostnames = [
